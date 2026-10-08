@@ -60,11 +60,26 @@ competitor:
 
 ## Install
 
+This plugin is distributed through GitHub only; it is not published to npm.
+
 ```sh
-dsh plugin --profile <profile> add <npm-spec-or-path>
+dsh plugin --profile <profile> add github:Arbeiter-bit/dsh-open-branch
 ```
 
-Or install the package directory from the GUI **Plugins → Add plugin** dialog.
+Pin a revision when you want a reproducible install:
+
+```sh
+dsh plugin --profile <profile> add github:Arbeiter-bit/dsh-open-branch#v0.1.1
+```
+
+The GUI **Plugins → Add plugin** dialog accepts the same spec. Restart or
+refresh the page afterwards so the browser half loads.
+
+Uninstall:
+
+```sh
+dsh plugin --profile <profile> remove dsh-open-branch
+```
 
 ## Limitations (v0.1)
 
