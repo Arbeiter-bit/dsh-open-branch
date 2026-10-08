@@ -43,6 +43,12 @@ window.__ModuleLoader__.load({
         creating: '正在创建侧边对话…',
         failed: '侧边对话打开失败',
         panel: '侧边对话',
+        edit: '编辑并重发',
+        editTip: '改掉这条消息，从它之前重新开始；原对话不受影响',
+        editFailed: '重发失败，点此重试',
+        cancel: '取消',
+        confirm: '确认重发',
+        sending: '正在重发…',
       }
       : {
         open: 'Side conversation',
@@ -51,6 +57,12 @@ window.__ModuleLoader__.load({
         creating: 'Preparing the side conversation…',
         failed: 'Could not open the side conversation',
         panel: 'Side conversation',
+        edit: 'Edit and resend',
+        editTip: 'Rewrite this message and continue from before it; the original conversation is untouched',
+        editFailed: 'Resend failed, click to retry',
+        cancel: 'Cancel',
+        confirm: 'Resend',
+        sending: 'Resending…',
       }
 
     /**
@@ -285,8 +297,113 @@ window.__ModuleLoader__.load({
       h('circle', { cx: 14.2, cy: 8, r: 0.9, fill: 'currentColor' })))
     }
 
+    /** Flatten one user message's content blocks to the editable plain text. */
+    function editableTextOf(content) {
+      if (!Array.isArray(content)) return ''
+      return content
+        .filter(part => part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
+        .map(part => part.text)
+        .join('')
+    }
+
+    /**
+     * Turn-tail entry: rewrite this turn's user message and continue from there.
+     *
+     * Confirming forks the session at the event BEFORE the original message, so
+     * the new branch never contains it, then sends the edited text into that
+     * branch and opens it in the main panel. The original session is untouched.
+     */
+    function EditResendEntry(props) {
+      const { turn, sessionId, useChat, editResend } = props
+      const [editing, setEditing] = React.useState(false)
+      const [draft, setDraft] = React.useState('')
+      const [state, setState] = React.useState('idle')
+      // The turn's own user message; anchorSeq is its durable event position.
+      const userNode = useChat((snapshot) => {
+        const keys = snapshot.locations.getTurn(turn.turn)
+        for (const key of keys) {
+          const node = snapshot.nodes.get(key)
+          if (node !== undefined && node.kind === 'user') return node
+        }
+        return undefined
+      })
+      if (userNode === undefined) return null
+      const original = editableTextOf(userNode.data.content)
+      if (original.trim() === '') return null
+
+      const buttonStyle = {
+        border: 'none',
+        background: 'transparent',
+        padding: '2px 6px',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        fontSize: '12px',
+        color: state === 'failed'
+          ? 'var(--dsw-alias-state-error-primary)'
+          : 'var(--dsw-alias-label-secondary)',
+      }
+
+      if (!editing) {
+        return h('button', {
+          type: 'button',
+          title: LABELS.editTip,
+          style: buttonStyle,
+          'data-dsh-open-branch-edit': state,
+          onClick: () => { setDraft(original); setEditing(true) },
+        }, state === 'failed' ? LABELS.editFailed : LABELS.edit)
+      }
+
+      return h('div', {
+        'data-dsh-open-branch-editor': '',
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+          width: '100%',
+          padding: '8px',
+          borderRadius: '8px',
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: 'var(--dsw-alias-bg-layer-1)',
+        },
+      },
+      h('textarea', {
+        value: draft,
+        rows: 3,
+        autoFocus: true,
+        onChange: event => { setDraft(event.target.value) },
+        style: {
+          width: '100%',
+          resize: 'vertical',
+          border: '1px solid var(--dsw-alias-border-l2)',
+          borderRadius: '6px',
+          padding: '6px',
+          fontSize: '13px',
+          font: 'inherit',
+          color: 'var(--dsw-alias-label-primary)',
+          background: 'var(--dsw-alias-bg-base)',
+        },
+      }),
+      h('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end' } },
+      h('button', {
+        type: 'button',
+        style: buttonStyle,
+        onClick: () => { setEditing(false); setState('idle') },
+      }, LABELS.cancel),
+      h('button', {
+        type: 'button',
+        style: { ...buttonStyle, color: 'var(--dsw-alias-brand-primary)' },
+        onClick: () => {
+          if (state === 'pending' || draft.trim() === '') return
+          setState('pending')
+          editResend(sessionId, userNode.anchorSeq, draft)
+            .then(() => { setEditing(false); setState('idle') })
+            .catch(() => { setState('failed') })
+        },
+      }, state === 'pending' ? LABELS.sending : LABELS.confirm)))
+    }
+
     return {
-      inject: ['slots', 'sessions', 'resources', 'sidebarRightTabs', 'sidebarRight', 'commandUi'],
+      inject: ['slots', 'sessions', 'resources', 'sidebarRightTabs', 'sidebarRight', 'commandUi', 'uiWorkspace'],
       apply(ctx) {
         const sideSessions = sideConversationStore(ctx)
         const isBlank = hostSessionId => ctx.sessions.list.getSnapshot().byId[hostSessionId]?.blank === true
@@ -297,6 +414,22 @@ window.__ModuleLoader__.load({
         const openSide = async (hostSessionId) => {
           await sideSessions.ensure(hostSessionId)
           ctx.sidebarRight.openResource(sideConversationAddress(hostSessionId))
+        }
+
+        // Rewrite one turn's user message: fork at the event BEFORE the original
+        // so the branch never contains it, send the edited text into that branch,
+        // then show the branch in the main panel. The source is left untouched.
+        const editResend = async (hostSessionId, userAnchorSeq, text) => {
+          const cwd = ctx.sessions.list.getSnapshot().byId[hostSessionId]?.cwd
+          const childId = userAnchorSeq > 0
+            ? await ctx.sessions.fork({ sessionId: hostSessionId, atSeq: userAnchorSeq - 1, increaseTitle: true })
+            : await ctx.sessions.create(cwd === undefined ? {} : { cwd })
+          const outcome = await ctx.sessions.using(childId, { source: 'editResend' }, reference =>
+            reference.binding.session.prompt([{ type: 'text', text }], 'queue'))
+          if (outcome === null || typeof outcome !== 'object' || outcome.ok !== true) {
+            throw new Error(`dsh-open-branch: the resend was not accepted (${JSON.stringify(outcome)})`)
+          }
+          ctx.uiWorkspace.openSession(childId)
         }
 
         ctx.effect(
@@ -342,6 +475,14 @@ window.__ModuleLoader__.load({
           order: 30,
           inject: () => ({ openSide }),
         }, SideConversationButton)), 'dsh-open-branch: composer entry')
+
+        // Rewrite this turn's user message and continue from before it.
+        ctx.effect(() => ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+          name: 'conversation.chat.turnTail',
+          id: `${TAB_ID}:edit-resend`,
+          order: 20,
+          inject: () => ({ editResend }),
+        }, EditResendEntry)), 'dsh-open-branch: edit and resend')
       },
     }
   },

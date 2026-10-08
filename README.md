@@ -26,9 +26,22 @@ completed prefix to fork from — exactly the moment a side conversation is most
 wanted — so that one case creates a fresh session in the same directory instead.
 Neither entry is contributed for a blank session.
 
+### Edit and resend
+
+Every completed turn also carries an **Edit and resend** entry. It opens an
+editor prefilled with that turn's user message; confirming:
+
+1. forks the session at the event **before** the original message, so the branch
+   never contains it,
+2. sends the edited text into that branch, and
+3. opens the branch in the **main panel**.
+
+The original session is never modified — nothing is rewritten in place, because
+a session log is append-only.
+
 ## Status
 
-v0.3.0. Cold boot verified in a fresh browser page, not inferred from
+v0.4.0. Cold boot verified in a fresh browser page, not inferred from
 registration.
 
 The web boot audit (`assertEntriesActive`) refuses to mount the **whole GUI**
@@ -38,12 +51,14 @@ audit by loading the composed profile in a fresh page with an empty module
 table and reading the console:
 
 ```
-v0.3.0  title: DeepSeek Harness   nodes: 387   console errors: 0
+v0.4.0  title: DeepSeek Harness   nodes: 387   console errors: 0
 ```
 
-That run also proves `commandUi` resolved and `ctx.commandUi.register` did not
-throw: either failure would have left the entry pending or failed, and the boot
-audit would have refused to mount.
+That run also proves every injected service resolved (`slots`, `sessions`,
+`resources`, `sidebarRightTabs`, `sidebarRight`, `commandUi`, `uiWorkspace`) and
+that every registration call succeeded: a missing service would leave the entry
+pending and a throwing registration would fail it, and the boot audit refuses to
+mount on either.
 
 **v0.1.1 and earlier are known-bad.** The package was renamed without renaming
 the `__ModuleLoader__` factory id, so the client entry failed to import and the
@@ -98,7 +113,12 @@ Design commitments, each chosen against a failure mode observed in a competitor:
   - registers the `/side` client command through `ctx.commandUi` with the
     `action` kind, which is what makes it submit no model message;
   - falls back to `ctx.sessions.create({ cwd })` when the fork reports
-    `session/fork-unavailable`, and rethrows every other failure.
+    `session/fork-unavailable`, and rethrows every other failure;
+  - adds one `conversation.chat.turnTail` entry that reads the turn's own user
+    message through `useChat`, forks at `anchorSeq - 1`, sends the edited text
+    through `reference.binding.session.prompt(..., 'queue')` inside
+    `ctx.sessions.using(...)`, then opens the branch with
+    `ctx.uiWorkspace.openSession`.
 
 ## Install
 
