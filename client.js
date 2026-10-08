@@ -1,11 +1,12 @@
 /**
- * Browser half of dsh-side-branch.
+ * Browser half of dsh-open-branch.
  *
- * What it adds:
- * - One action on every completed turn: open that turn in a side conversation.
- * - A right-Sidebar tab type that hosts that side conversation and stays
- *   writable, because it is an ordinary DSH Session (an official fork), not a
- *   read-only transcript.
+ * One side conversation per session. Opening it the first time forks the
+ * current session once at its latest completed turn; every later open reuses
+ * that same side session, so clicking the entry again never piles up forks.
+ *
+ * The side session is an ordinary DSH Session, so the panel is fully writable:
+ * you can keep asking there and the main conversation keeps running untouched.
  *
  * It writes no session event type of its own, shadows no shipped UI, and adds
  * no Host route: forking uses the shipped `remote.session.fork`.
@@ -26,43 +27,45 @@ window.__ModuleLoader__.load({
     const TAB_KIND = 'sidebranch'
     /** Resource protocol claimed by this plugin. */
     const PROTOCOL = 'sidebranch'
-    /** Canonical address prefix for one side-branch conversation. */
-    const ADDRESS_PREFIX = `dsh-resource://${PROTOCOL}/session/`
+    /** One address per host session: this is what makes the panel a singleton. */
+    const ADDRESS_PREFIX = `dsh-resource://${PROTOCOL}/for/`
     /** Child slot declared by this tab body; distinct from ui-subagent's. */
     const CONVERSATION_SLOT = 'sidebranch.conversation'
+    /** Remembers which side session belongs to which host session. */
+    const STORE_KEY = 'dsh-open-branch/side-sessions/v1'
 
-    const LABELS = (typeof navigator !== 'undefined' && /^zh/i.test(navigator.language))
+    const ZH = typeof navigator !== 'undefined' && /^zh/i.test(navigator.language)
+    const LABELS = ZH
       ? {
-        branch: '在侧栏分叉',
-        branchTip: '从这一轮开一个可写的侧边对话，主任务不受影响',
-        title: '侧分支',
-        failed: '分叉失败',
+        open: '侧边对话',
+        openTip: '在主对话旁边开一个可写的侧边对话；主任务不受影响',
+        creating: '正在创建侧边对话…',
+        failed: '侧边对话打开失败',
+        panel: '侧边对话',
       }
       : {
-        branch: 'Branch in sidebar',
-        branchTip: 'Open a writable side conversation from this turn; the main task keeps running',
-        title: 'Side branch',
-        failed: 'Fork failed',
+        open: 'Side conversation',
+        openTip: 'Open a writable side conversation beside the main task; the main task keeps running',
+        creating: 'Preparing the side conversation…',
+        failed: 'Could not open the side conversation',
+        panel: 'Side conversation',
       }
 
     /**
-     * Build the canonical address of one side-branch tab.
-     * @param childSessionId - the forked Session.
-     * @param originSessionId - the Session it was forked from.
-     * @param seq - inclusive source event seq of the fork cut.
+     * Build the canonical address of the one side conversation of a session.
+     * @param hostSessionId - the session whose sidebar hosts the panel.
      * @returns a `dsh-resource://` address this plugin's type claims.
      */
-    function sideBranchAddress(childSessionId, originSessionId, seq) {
-      const query = new URLSearchParams({ origin: originSessionId, seq: String(seq) })
-      return `${ADDRESS_PREFIX}${encodeURIComponent(childSessionId)}?${query}`
+    function sideConversationAddress(hostSessionId) {
+      return `${ADDRESS_PREFIX}${encodeURIComponent(hostSessionId)}`
     }
 
     /**
-     * Parse one side-branch address.
+     * Parse one side-conversation address.
      * @param value - candidate resource address.
-     * @returns the decoded facts, or undefined for another or malformed address.
+     * @returns the host session id, or undefined for another or malformed address.
      */
-    function parseSideBranchAddress(value) {
+    function parseSideConversationAddress(value) {
       let url
       try {
         url = new URL(value)
@@ -71,15 +74,32 @@ window.__ModuleLoader__.load({
       }
       if (url.protocol !== 'dsh-resource:' || url.hostname.toLowerCase() !== PROTOCOL) return undefined
       const parts = url.pathname.split('/').filter(Boolean)
-      if (parts.length !== 2 || parts[0] !== 'session') return undefined
+      if (parts.length !== 2 || parts[0] !== 'for') return undefined
       try {
-        return {
-          childSessionId: decodeURIComponent(parts[1]),
-          originSessionId: url.searchParams.get('origin') ?? '',
-          seq: Number(url.searchParams.get('seq') ?? '0'),
-        }
+        return decodeURIComponent(parts[1])
       } catch (_invalidEncoding) {
         return undefined
+      }
+    }
+
+    /** Read the durable host-to-side mapping; an unavailable store degrades to empty. */
+    function readMapping() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(STORE_KEY) ?? '{}')
+        return parsed !== null && typeof parsed === 'object' ? parsed : {}
+      } catch (_unavailableStorage) {
+        return {}
+      }
+    }
+
+    /** Persist one host-to-side binding; failure only costs reuse across reloads. */
+    function rememberMapping(hostSessionId, sideSessionId) {
+      try {
+        const mapping = readMapping()
+        mapping[hostSessionId] = sideSessionId
+        window.localStorage.setItem(STORE_KEY, JSON.stringify(mapping))
+      } catch (_unavailableStorage) {
+        /* the page-lifetime map still reuses the session */
       }
     }
 
@@ -88,23 +108,62 @@ window.__ModuleLoader__.load({
       return new Promise((resolve) => { signal.addEventListener('abort', () => { resolve() }, { once: true }) })
     }
 
-    /** Retain the forked Session for exactly as long as its tab is open. */
-    function sideBranchResourceProvider(sessions) {
-      return {
+    /**
+     * The one-side-session-per-host-session store.
+     *
+     * Creation is serialized so two rapid opens cannot fork twice, and the
+     * binding is remembered for the page's lifetime plus across reloads, which
+     * is what makes the panel a singleton instead of a fork per click.
+     *
+     * @param ctx - the plugin's client context.
+     * @returns the `ensure` operation and the resource provider built on it.
+     */
+    function sideConversationStore(ctx) {
+      const live = new Map()
+      let queue = Promise.resolve()
+      const isKnown = id => id !== undefined && ctx.sessions.list.getSnapshot().byId[id] !== undefined
+
+      const ensure = (hostSessionId) => {
+        const remembered = live.get(hostSessionId) ?? readMapping()[hostSessionId]
+        if (isKnown(remembered)) {
+          live.set(hostSessionId, remembered)
+          return Promise.resolve(remembered)
+        }
+        const run = queue.then(async () => {
+          const again = live.get(hostSessionId) ?? readMapping()[hostSessionId]
+          if (isKnown(again)) {
+            live.set(hostSessionId, again)
+            return again
+          }
+          // Fork once, at the host session's latest completed turn.
+          const created = await ctx.sessions.fork({ sessionId: hostSessionId, increaseTitle: true })
+          live.set(hostSessionId, created)
+          rememberMapping(hostSessionId, created)
+          return created
+        })
+        queue = run.then(() => undefined, () => undefined)
+        return run
+      }
+
+      const provider = {
         protocol: PROTOCOL,
         async *open(resourceAddress, { signal }) {
-          const parsed = parseSideBranchAddress(resourceAddress)
-          if (parsed === undefined) throw new Error(`dsh-side-branch: invalid address "${resourceAddress}"`)
+          const hostSessionId = parseSideConversationAddress(resourceAddress)
+          if (hostSessionId === undefined) throw new Error(`dsh-open-branch: invalid address "${resourceAddress}"`)
           if (signal.aborted) return
-          const reference = sessions.retain(parsed.childSessionId, { source: 'sideBranch', signal })
+          const sideSessionId = await ensure(hostSessionId)
+          if (signal.aborted) return
+          const reference = ctx.sessions.retain(sideSessionId, { source: 'sideBranch', signal })
           try {
-            yield { ok: true, value: { parsed, reference } }
+            yield { ok: true, value: { hostSessionId, reference } }
             await waitForAbort(signal)
           } finally {
             reference.release()
           }
         },
       }
+
+      return { ensure, provider }
     }
 
     /** Force the embedded Conversation onto its Chat view. */
@@ -112,7 +171,7 @@ window.__ModuleLoader__.load({
       return h(React.Fragment, null, props.renderSlot('conversation.session', { view: 'chat' }))
     }
 
-    /** The Conversation body of one side-branch Session. */
+    /** The Conversation body of the side session. */
     function ConversationPanel(props) {
       const { sessionId, useSession, useConversation, useSessions, renderFactorySlot } = props
       const session = useSession(value => value)
@@ -130,83 +189,115 @@ window.__ModuleLoader__.load({
       })
     }
 
-    /** Tab body: bind the retained child Session around its Conversation. */
-    function SideBranchTab(props) {
+    /** Tab body: bind the retained side Session around its Conversation. */
+    function SideConversationTab(props) {
       const { useResource, useTabInfo, SessionProvider, renderSlot } = props
       const { tab } = useTabInfo()
       const resource = useResource(tab.contentId)
       return h('div', {
-        'data-side-branch': '',
+        'data-dsh-open-branch': '',
         // Must bound this box, or the embedded Conversation has no measurable
         // height and its scroll container never becomes scrollable.
         style: { display: 'flex', width: '100%', height: '100%', minWidth: 0, minHeight: 0 },
       },
       resource.value === undefined
-        ? null
+        ? h('div', {
+          style: { padding: '12px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' },
+        }, LABELS.creating)
         : h(SessionProvider, { session: resource.value.reference },
           renderSlot(CONVERSATION_SLOT, {})))
     }
 
-    /** Per-turn action: fork here and open the side conversation. */
-    function BranchTurnAction(props) {
-      const { sessionId, seq, forkAt } = props
+    /** Composer-toolbar entry: open the one side conversation of this session. */
+    function SideConversationButton(props) {
+      const { sessionId, openSide, useSession } = props
       const [state, setState] = React.useState('idle')
+      const blank = useSession(value => value.blank)
+      // A blank session has no completed turn to fork from, so there is nothing
+      // to open yet: contributing nothing is better than an entry that fails.
+      if (sessionId === undefined || sessionId === null || sessionId === '' || blank === true) return null
       return h('button', {
         type: 'button',
-        title: state === 'failed' ? LABELS.failed : LABELS.branchTip,
-        'aria-label': LABELS.branch,
-        'data-side-branch-action': state,
+        title: state === 'failed' ? LABELS.failed : LABELS.openTip,
+        'aria-label': LABELS.open,
+        'data-dsh-open-branch-action': state,
+        style: {
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '24px',
+          height: '24px',
+          padding: 0,
+          border: 'none',
+          borderRadius: '6px',
+          background: 'transparent',
+          cursor: 'pointer',
+          color: state === 'failed'
+            ? 'var(--dsw-alias-state-error-primary)'
+            : 'var(--dsw-alias-label-secondary)',
+        },
         onClick: () => {
           if (state === 'pending') return
           setState('pending')
-          forkAt(sessionId, seq)
+          openSide(sessionId)
             .then(() => { setState('idle') })
             .catch(() => { setState('failed') })
         },
-      }, LABELS.branch)
+      }, h('svg', {
+        viewBox: '0 0 16 16', width: 16, height: 16, 'aria-hidden': true, style: { display: 'block' },
+      },
+      h('rect', {
+        x: 1.4, y: 2.6, width: 7.2, height: 10.8, rx: 1.4,
+        fill: 'none', stroke: 'currentColor', strokeWidth: 1.2,
+      }),
+      h('path', {
+        d: 'M10.6 8h3.2', fill: 'none', stroke: 'currentColor', strokeWidth: 1.2, strokeLinecap: 'round',
+      }),
+      h('circle', { cx: 14.2, cy: 8, r: 0.9, fill: 'currentColor' })))
     }
 
     return {
       inject: ['slots', 'sessions', 'resources', 'sidebarRightTabs', 'sidebarRight'],
       apply(ctx) {
-        // The provider holds one session reference per open side-branch tab.
+        const sideSessions = sideConversationStore(ctx)
+
         ctx.effect(
-          () => ctx.resources.register(sideBranchResourceProvider(ctx.sessions)),
-          'dsh-side-branch: resources',
+          () => ctx.resources.register(sideSessions.provider),
+          'dsh-open-branch: resources',
         )
 
         ctx.effect(() => ctx.sidebarRightTabs.register({
           id: TAB_ID,
           kind: TAB_KIND,
           patterns: [`${ADDRESS_PREFIX}**`],
-          priority: 'extension',
-          canOpen: address => parseSideBranchAddress(address) !== undefined,
-          title: () => LABELS.title,
-        }), 'dsh-side-branch: tab type')
+          canOpen: address => parseSideConversationAddress(address) !== undefined,
+          title: () => LABELS.panel,
+        }), 'dsh-open-branch: tab type')
 
         ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
           name: 'sidebar.right.pane.tab',
           key: TAB_ID,
           children: { [CONVERSATION_SLOT]: { kind: 'single', scope: 'session' } },
-        }, SideBranchTab)), 'dsh-side-branch: tab body')
+        }, SideConversationTab)), 'dsh-open-branch: tab body')
 
         ctx.effect(() => ctx.slots.inject(CONVERSATION_SLOT, () => ctx.slots.register({
           name: CONVERSATION_SLOT,
-        }, ConversationPanel)), 'dsh-side-branch: conversation')
+        }, ConversationPanel)), 'dsh-open-branch: conversation')
 
-        ctx.effect(() => ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
-          name: 'conversation.chat.turnTail',
-          id: `${TAB_ID}:branch-here`,
-          order: 40,
+        ctx.effect(() => ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+          name: 'conversation.input.right',
+          id: `${TAB_ID}:open`,
+          order: 30,
           inject: () => ({
-            // Fork at this turn's own seq, then show the child in the Sidebar.
-            forkAt: async (sessionId, seq) => {
-              const childId = await ctx.sessions.fork({ sessionId, atSeq: seq, increaseTitle: true })
-              ctx.sidebarRight.openResource(sideBranchAddress(childId, sessionId, seq))
-              return childId
+            // One address per host session, so repeats reveal the same tab.
+            // Create first, so a failure surfaces on the button instead of
+            // leaving an empty panel behind.
+            openSide: async (hostSessionId) => {
+              await sideSessions.ensure(hostSessionId)
+              ctx.sidebarRight.openResource(sideConversationAddress(hostSessionId))
             },
           }),
-        }, BranchTurnAction)), 'dsh-side-branch: per-turn action')
+        }, SideConversationButton)), 'dsh-open-branch: composer entry')
       },
     }
   },
