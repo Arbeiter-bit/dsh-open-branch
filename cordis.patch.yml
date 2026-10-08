@@ -1,0 +1,4 @@
+- insert:
+    - id: open-branch
+      name: dsh-open-branch
+      config: {}
