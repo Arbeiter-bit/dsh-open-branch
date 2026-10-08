@@ -5,6 +5,15 @@
   "description": "Fork a writable side conversation from any completed turn of the current DSH session, without interrupting the main task.",
   "type": "module",
   "license": "MIT",
+  "author": "Arbeiter-bit",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Arbeiter-bit/dsh-open-branch.git"
+  },
+  "homepage": "https://github.com/Arbeiter-bit/dsh-open-branch#readme",
+  "bugs": {
+    "url": "https://github.com/Arbeiter-bit/dsh-open-branch/issues"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js"
