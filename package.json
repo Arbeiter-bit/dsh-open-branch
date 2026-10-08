@@ -1,8 +1,8 @@
 {
   "name": "dsh-open-branch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "One writable side conversation per session, in the right Sidebar, without interrupting the main task.",
+  "description": "One writable side conversation per session in the right Sidebar, opened by a composer button or /side, without interrupting the main task.",
   "type": "module",
   "license": "MIT",
   "author": "Arbeiter-bit",

@@ -39,6 +39,7 @@ window.__ModuleLoader__.load({
       ? {
         open: '侧边对话',
         openTip: '在主对话旁边开一个可写的侧边对话；主任务不受影响',
+        commandTip: '在旁边开一条不打断主任务的侧边对话',
         creating: '正在创建侧边对话…',
         failed: '侧边对话打开失败',
         panel: '侧边对话',
@@ -46,6 +47,7 @@ window.__ModuleLoader__.load({
       : {
         open: 'Side conversation',
         openTip: 'Open a writable side conversation beside the main task; the main task keeps running',
+        commandTip: 'Open a side conversation that does not interrupt the main task',
         creating: 'Preparing the side conversation…',
         failed: 'Could not open the side conversation',
         panel: 'Side conversation',
@@ -108,6 +110,34 @@ window.__ModuleLoader__.load({
       return new Promise((resolve) => { signal.addEventListener('abort', () => { resolve() }, { once: true }) })
     }
 
+    /** Whether one fork rejection is the documented "no completed turn to fork from" case. */
+    function isForkUnavailable(error) {
+      return error !== null && typeof error === 'object' && error.rpcError?.code === 'session/fork-unavailable'
+    }
+
+    /**
+     * Create the side session of one host session.
+     *
+     * A fork is preferred, because the side line then inherits what the main
+     * session has already settled. While the main session is still working
+     * through its first turn there is no completed prefix to fork from — which
+     * is exactly when a side conversation is most wanted — so that one case
+     * falls back to a fresh session in the same directory. Any other failure is
+     * a real error and propagates.
+     *
+     * @param ctx - the plugin's client context.
+     * @param hostSessionId - the session the side line belongs to.
+     * @returns the created side session id.
+     */
+    function createSideSession(ctx, hostSessionId) {
+      return ctx.sessions.fork({ sessionId: hostSessionId, increaseTitle: true })
+        .catch((error) => {
+          if (!isForkUnavailable(error)) throw error
+          const cwd = ctx.sessions.list.getSnapshot().byId[hostSessionId]?.cwd
+          return ctx.sessions.create(cwd === undefined ? {} : { cwd })
+        })
+    }
+
     /**
      * The one-side-session-per-host-session store.
      *
@@ -135,8 +165,7 @@ window.__ModuleLoader__.load({
             live.set(hostSessionId, again)
             return again
           }
-          // Fork once, at the host session's latest completed turn.
-          const created = await ctx.sessions.fork({ sessionId: hostSessionId, increaseTitle: true })
+          const created = await createSideSession(ctx, hostSessionId)
           live.set(hostSessionId, created)
           rememberMapping(hostSessionId, created)
           return created
@@ -257,14 +286,37 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'sessions', 'resources', 'sidebarRightTabs', 'sidebarRight'],
+      inject: ['slots', 'sessions', 'resources', 'sidebarRightTabs', 'sidebarRight', 'commandUi'],
       apply(ctx) {
         const sideSessions = sideConversationStore(ctx)
+        const isBlank = hostSessionId => ctx.sessions.list.getSnapshot().byId[hostSessionId]?.blank === true
+
+        // One address per host session, so a repeat open reveals the same tab.
+        // Create first, so a failure surfaces at the entry that asked for it
+        // instead of leaving an empty panel behind.
+        const openSide = async (hostSessionId) => {
+          await sideSessions.ensure(hostSessionId)
+          ctx.sidebarRight.openResource(sideConversationAddress(hostSessionId))
+        }
 
         ctx.effect(
           () => ctx.resources.register(sideSessions.provider),
           'dsh-open-branch: resources',
         )
+
+        // `/side` opens the same panel as the composer entry. The action kind
+        // consumes the trigger token and submits nothing, so running it never
+        // becomes a model message and the main task keeps going.
+        ctx.effect(() => ctx.commandUi.register({
+          name: 'side',
+          label: () => LABELS.open,
+          description: () => LABELS.commandTip,
+          available: session => !isBlank(session.sessionId),
+          ui: {
+            kind: 'action',
+            run: session => { void openSide(session.sessionId).catch(() => {}) },
+          },
+        }), 'dsh-open-branch: /side command')
 
         ctx.effect(() => ctx.sidebarRightTabs.register({
           id: TAB_ID,
@@ -288,15 +340,7 @@ window.__ModuleLoader__.load({
           name: 'conversation.input.right',
           id: `${TAB_ID}:open`,
           order: 30,
-          inject: () => ({
-            // One address per host session, so repeats reveal the same tab.
-            // Create first, so a failure surfaces on the button instead of
-            // leaving an empty panel behind.
-            openSide: async (hostSessionId) => {
-              await sideSessions.ensure(hostSessionId)
-              ctx.sidebarRight.openResource(sideConversationAddress(hostSessionId))
-            },
-          }),
+          inject: () => ({ openSide }),
         }, SideConversationButton)), 'dsh-open-branch: composer entry')
       },
     }

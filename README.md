@@ -5,19 +5,30 @@ conversation keeps running untouched.
 
 ## What it does
 
-A small entry in the composer toolbar opens a side conversation. The first open
-forks the current session once, at its latest completed turn; **every later open
-reuses that same side session**, so opening it again never piles up forks.
+Two ways to open the same panel:
 
-The side session is an ordinary DSH Session, so the panel is fully writable: you
-can keep asking there, and the main conversation is unaffected.
+- the **composer-toolbar entry** (the icon left of Send);
+- **`/side`** typed in the composer.
 
-The entry is not contributed for a blank session — there is no completed turn to
-fork from yet, so contributing nothing is better than an entry that fails.
+`/side` is a client-side `action` command: it consumes the trigger token, opens
+the panel, and **submits nothing**. No model message is produced, so the main
+task keeps running while you talk in the side line — which is the whole point.
+
+The first open creates the side session once, at the main session's latest
+completed turn; **every later open reuses that same side session**, so opening
+it again never piles up forks.
+
+The side session is an ordinary DSH Session, so the panel is fully writable and
+the main conversation is unaffected.
+
+While the main session is still working through its **first** turn there is no
+completed prefix to fork from — exactly the moment a side conversation is most
+wanted — so that one case creates a fresh session in the same directory instead.
+Neither entry is contributed for a blank session.
 
 ## Status
 
-v0.2.0. Cold boot verified in a fresh browser page, not inferred from
+v0.3.0. Cold boot verified in a fresh browser page, not inferred from
 registration.
 
 The web boot audit (`assertEntriesActive`) refuses to mount the **whole GUI**
@@ -27,10 +38,12 @@ audit by loading the composed profile in a fresh page with an empty module
 table and reading the console:
 
 ```
-v0.2.0  title: DeepSeek Harness   nodes: 387   console errors: 0
-        composer entry absent on a blank session (correct)
-        composer entry present with its tooltip on a session with history
+v0.3.0  title: DeepSeek Harness   nodes: 387   console errors: 0
 ```
+
+That run also proves `commandUi` resolved and `ctx.commandUi.register` did not
+throw: either failure would have left the entry pending or failed, and the boot
+audit would have refused to mount.
 
 **v0.1.1 and earlier are known-bad.** The package was renamed without renaming
 the `__ModuleLoader__` factory id, so the client entry failed to import and the
@@ -81,7 +94,11 @@ Design commitments, each chosen against a failure mode observed in a competitor:
   - registers the `sidebranch` right-Sidebar tab type and its body;
   - declares and fills the `sidebranch.conversation` child slot with the shared
     `conversation.content` factory, so the embedded conversation is the real one;
-  - adds one `conversation.input.right` entry — the composer-toolbar button.
+  - adds one `conversation.input.right` entry — the composer-toolbar button;
+  - registers the `/side` client command through `ctx.commandUi` with the
+    `action` kind, which is what makes it submit no model message;
+  - falls back to `ctx.sessions.create({ cwd })` when the fork reports
+    `session/fork-unavailable`, and rethrows every other failure.
 
 ## Install
 
@@ -108,13 +125,13 @@ dsh plugin --profile <profile> remove dsh-open-branch
 
 ## Limitations
 
-- A blank session contributes no entry; the first side conversation needs one
-  completed turn in the main session.
-- The side session is a fork at the main session's latest completed turn at the
-  moment it is created. Later turns of the main session are **not** visible in
-  the side conversation — that is the price of a real, independent, writable
-  session, and it is the opposite trade from plugins that rebuild the branch
-  from the main session every turn.
+- A blank session contributes neither entry. Once the main session has content
+  both work, including while its first turn is still running — in that case the
+  side session is a fresh session rather than a fork, so it inherits nothing.
+- The side session reflects the main session as of its creation. Later turns of
+  the main session are **not** visible in the side conversation — that is the
+  price of a real, independent, writable session, and the opposite trade from
+  plugins that rebuild the branch from the main session every turn.
 - Deleting the side session outside the plugin leaves a stale binding in
   `localStorage`; the next open detects the missing session and forks a new one.
 - Localized labels are chosen from `navigator.language` (zh/en); the Client
