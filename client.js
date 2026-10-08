@@ -31,6 +31,19 @@ window.__ModuleLoader__.load({
     const ADDRESS_PREFIX = `dsh-resource://${PROTOCOL}/for/`
     /** Child slot declared by this tab body; distinct from ui-subagent's. */
     const CONVERSATION_SLOT = 'sidebranch.conversation'
+
+    /**
+     * Shared primitive kit, read behind a guard. It is a baseline module for
+     * dynamic bundles, but if it is ever unavailable the user bubble must fall
+     * back to plain text rather than blank the whole conversation.
+     */
+    const primitives = (() => {
+      try {
+        return require('@deepseek-ai/dsh-client-ui-primitives')
+      } catch (_unavailablePrimitives) {
+        return undefined
+      }
+    })()
     /** Remembers which side session belongs to which host session. */
     const STORE_KEY = 'dsh-open-branch/side-sessions/v1'
 
@@ -45,10 +58,13 @@ window.__ModuleLoader__.load({
         panel: '侧边对话',
         edit: '编辑并重发',
         editTip: '改掉这条消息，从它之前重新开始；原对话不受影响',
+        editHint: '双击编辑；保存后会从这条消息之前重新开始，它之后的消息不会进入新分支',
         editFailed: '重发失败，点此重试',
         cancel: '取消',
         confirm: '确认重发',
         sending: '正在重发…',
+        copy: '复制',
+        copied: '已复制',
       }
       : {
         open: 'Side conversation',
@@ -59,10 +75,13 @@ window.__ModuleLoader__.load({
         panel: 'Side conversation',
         edit: 'Edit and resend',
         editTip: 'Rewrite this message and continue from before it; the original conversation is untouched',
+        editHint: 'Double-click to edit. Saving continues from before this message, so later messages are not carried into the new branch',
         editFailed: 'Resend failed, click to retry',
         cancel: 'Cancel',
         confirm: 'Resend',
         sending: 'Resending…',
+        copy: 'Copy',
+        copied: 'Copied',
       }
 
     /**
@@ -413,6 +432,222 @@ window.__ModuleLoader__.load({
       }, state === 'pending' ? LABELS.sending : LABELS.confirm)))
     }
 
+    /** Split one user message's blocks exactly as the shipped bubble does. */
+    function userContentParts(content) {
+      const texts = []
+      const attachments = []
+      const rest = []
+      for (const block of Array.isArray(content) ? content : []) {
+        if (block === null || typeof block !== 'object') { rest.push(block); continue }
+        if (block.type === 'text' && typeof block.text === 'string') texts.push(block.text)
+        else if (block.type === 'image' && block.attachment !== undefined) {
+          attachments.push({ type: 'image', image: { attachment: block.attachment } })
+        } else if (block.type === 'file' && block.attachment !== undefined) {
+          attachments.push({ type: 'file', file: block.attachment })
+        } else rest.push(block)
+      }
+      return { text: texts.join(''), attachments, rest }
+    }
+
+    /** Local HH:MM for one epoch-ms stamp without pulling in a locale service. */
+    function clockText(time) {
+      if (typeof time !== 'number') return ''
+      const d = new Date(time)
+      return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    }
+
+    /**
+     * Replacement renderer for the `user` Chat node.
+     *
+     * The shipped bubble owns its action row internally and exposes no hook, so
+     * double-click editing and the hover hint require owning this node's DOM.
+     * Everything the shipped bubble shows is reproduced here: text, reference
+     * labels, image attachments through the shared `renderMessageImages` owner
+     * prop, file attachments, extra blocks, and the time/copy row.
+     *
+     * The primitive kit is read behind a guard: when it is unavailable the
+     * bubble still renders its plain text instead of blanking the conversation.
+     */
+    function UserMessageRow(props) {
+      const { node, sessionId, editResend, renderMessageImages } = props
+      const [editing, setEditing] = React.useState(false)
+      const [draft, setDraft] = React.useState('')
+      const [state, setState] = React.useState('idle')
+      const [copied, setCopied] = React.useState(false)
+      const boxRef = React.useRef(null)
+      const data = node.data
+      const { text, attachments, rest } = userContentParts(data.content)
+      const labels = Array.isArray(data.referenceLabels) ? data.referenceLabels : []
+
+      // Clicking anywhere outside the editor leaves edit mode.
+      React.useEffect(() => {
+        if (!editing) return undefined
+        const onPointerDown = (event) => {
+          const box = boxRef.current
+          if (box !== null && box.contains(event.target) === false) {
+            setEditing(false)
+            setState('idle')
+          }
+        }
+        document.addEventListener('mousedown', onPointerDown)
+        return () => { document.removeEventListener('mousedown', onPointerDown) }
+      }, [editing])
+
+      const iconStyle = {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '2px',
+        border: 'none',
+        background: 'transparent',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        color: 'var(--dsw-alias-label-secondary)',
+      }
+      const pencil = h('svg', {
+        viewBox: '0 0 16 16', width: 13, height: 13, 'aria-hidden': true, style: { display: 'block' },
+      },
+      h('path', {
+        d: 'M11.2 1.9a1.6 1.6 0 0 1 2.3 2.3l-7.2 7.2-3.1.8.8-3.1z',
+        fill: 'none', stroke: 'currentColor', strokeWidth: 1.2, strokeLinejoin: 'round',
+      }),
+      h('path', { d: 'M10 3.1l2.9 2.9', fill: 'none', stroke: 'currentColor', strokeWidth: 1.2 }))
+
+      if (editing) {
+        return h('div', {
+          ref: boxRef,
+          'data-dsh-open-branch-editor': '',
+          style: {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+            margin: '4px 0',
+            padding: '8px',
+            borderRadius: '8px',
+            border: '1px solid var(--dsw-alias-border-l1)',
+            background: 'var(--dsw-alias-bg-layer-1)',
+          },
+        },
+        h('textarea', {
+          value: draft,
+          rows: 3,
+          autoFocus: true,
+          onChange: event => { setDraft(event.target.value) },
+          style: {
+            width: '100%',
+            boxSizing: 'border-box',
+            resize: 'vertical',
+            border: '1px solid var(--dsw-alias-border-l2)',
+            borderRadius: '6px',
+            padding: '6px',
+            font: 'inherit',
+            fontSize: '13px',
+            color: 'var(--dsw-alias-label-primary)',
+            background: 'var(--dsw-alias-bg-base)',
+          },
+        }),
+        h('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end' } },
+        h('button', {
+          type: 'button',
+          style: { ...iconStyle, fontSize: '12px', padding: '3px 8px' },
+          onClick: () => { setEditing(false); setState('idle') },
+        }, LABELS.cancel),
+        h('button', {
+          type: 'button',
+          style: { ...iconStyle, fontSize: '12px', padding: '3px 8px', color: 'var(--dsw-alias-brand-primary)' },
+          onClick: () => {
+            if (state === 'pending' || draft.trim() === '') return
+            setState('pending')
+            editResend(sessionId, data.seq, draft)
+              .then(() => { setEditing(false); setState('idle') })
+              .catch(() => { setState('failed') })
+          },
+        }, state === 'pending' ? LABELS.sending : LABELS.confirm)))
+      }
+
+      const bubbleText = typeof primitives?.projectUserText === 'function'
+        ? primitives.projectUserText(text, labels, [], 'skill', { openFile: props.openFile, openSkill: props.openSkill })
+        : text
+
+      return h('div', {
+        'data-dsh-open-branch-user': '',
+        style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' },
+      },
+      attachments.length > 0 && h('div', {
+        style: { display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'flex-end' },
+      }, attachments.map((attachment, index) => attachment.type === 'image' && typeof renderMessageImages === 'function'
+        ? h(React.Fragment, { key: `image:${index}` },
+          renderMessageImages({ images: [attachment.image], align: 'end', compact: attachments.length > 1 }))
+        : h('span', {
+          key: `file:${index}`,
+          title: attachment.file?.name ?? '',
+          style: {
+            padding: '2px 8px',
+            borderRadius: '6px',
+            fontSize: '12px',
+            border: '1px solid var(--dsw-alias-border-l1)',
+            color: 'var(--dsw-alias-label-secondary)',
+          },
+        }, attachment.file?.name ?? ''))),
+      (text !== '' || rest.length > 0) && h('div', {
+        title: LABELS.editHint,
+        onDoubleClick: () => { setDraft(text); setEditing(true) },
+        style: {
+          maxWidth: '100%',
+          padding: '8px 12px',
+          borderRadius: '12px',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          fontSize: '14px',
+          lineHeight: 1.5,
+          color: 'var(--dsw-alias-label-primary)',
+          background: 'var(--dsw-alias-bg-layer-2)',
+          cursor: 'text',
+        },
+      }, bubbleText, rest.map((block, index) => h('pre', {
+        key: index,
+        style: { margin: '6px 0 0', fontSize: '12px', whiteSpace: 'pre-wrap', opacity: 0.7 },
+      }, JSON.stringify(block, null, 2)))),
+      labels.length > 0 && h('div', {
+        style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' },
+      }, labels.join('、')),
+      h('div', {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          fontSize: '12px',
+          color: 'var(--dsw-alias-label-secondary)',
+        },
+      },
+      h('span', null, clockText(data.time)),
+      h('button', {
+        type: 'button',
+        title: copied ? LABELS.copied : LABELS.copy,
+        'aria-label': LABELS.copy,
+        style: iconStyle,
+        onClick: () => {
+          void navigator.clipboard?.writeText(text).then(() => {
+            setCopied(true)
+            window.setTimeout(() => { setCopied(false) }, 1200)
+          }).catch(() => undefined)
+        },
+      }, h('svg', { viewBox: '0 0 16 16', width: 13, height: 13, 'aria-hidden': true, style: { display: 'block' } },
+        h('rect', { x: 5, y: 5, width: 8, height: 9, rx: 1.5, fill: 'none', stroke: 'currentColor', strokeWidth: 1.2 }),
+        h('path', { d: 'M3.5 10.5V3.2A1.2 1.2 0 0 1 4.7 2h6', fill: 'none', stroke: 'currentColor', strokeWidth: 1.2 }))),
+      h('button', {
+        type: 'button',
+        title: state === 'failed' ? LABELS.editFailed : LABELS.editHint,
+        'aria-label': LABELS.edit,
+        style: {
+          ...iconStyle,
+          color: state === 'failed' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-secondary)',
+        },
+        'data-dsh-open-branch-edit': state,
+        onClick: () => { setDraft(text); setEditing(true) },
+      }, pencil)))
+    }
+
     return {
       inject: ['slots', 'sessions', 'resources', 'sidebarRightTabs', 'sidebarRight', 'commandUi', 'uiWorkspace'],
       apply(ctx) {
@@ -487,13 +722,18 @@ window.__ModuleLoader__.load({
           inject: () => ({ openSide }),
         }, SideConversationButton)), 'dsh-open-branch: composer entry')
 
-        // Rewrite this turn's user message and continue from before it.
-        ctx.effect(() => ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
-          name: 'conversation.chat.turnTail',
-          id: `${TAB_ID}:edit-resend`,
-          order: 20,
+        // Own the `user` Chat node: only the bubble's own DOM can carry
+        // double-click editing and the hover hint, which the shipped bubble
+        // keeps internal.
+        ctx.effect(() => ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+          name: 'conversation.chat.node',
+          key: 'user',
+          // A keyed cell only tolerates a second registration at a DIFFERENT
+          // priority; the lowest one renders, so this shadows the shipped
+          // renderer instead of colliding with it.
+          priority: -1,
           inject: () => ({ editResend }),
-        }, EditResendEntry)), 'dsh-open-branch: edit and resend')
+        }, UserMessageRow)), 'dsh-open-branch: user message renderer')
       },
     }
   },
