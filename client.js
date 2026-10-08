@@ -31,8 +31,6 @@ window.__ModuleLoader__.load({
     const ADDRESS_PREFIX = `dsh-resource://${PROTOCOL}/for/`
     /** Child slot declared by this tab body; distinct from ui-subagent's. */
     const CONVERSATION_SLOT = 'sidebranch.conversation'
-    /** Chat row kind that hosts the per-message edit entry. */
-    const USER_EDIT_KIND = 'dsh-open-branch-edit'
     /** Remembers which side session belongs to which host session. */
     const STORE_KEY = 'dsh-open-branch/side-sessions/v1'
 
@@ -309,59 +307,28 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Definition of the per-message edit row.
+     * Turn-tail entry: rewrite this turn's user message and continue from there.
      *
-     * It matches each `user/message` event and anchors itself at
-     * `seq + 0.05`, i.e. just after the user bubble and before anything the
-     * assistant produced for that step.
-     *
-     * @returns one Conversation Node definition for `ctx.uiConversation.events`.
+     * Confirming forks the session at the event BEFORE the original message, so
+     * the new branch never contains it, then sends the edited text into that
+     * branch and opens it in the main panel. The original session is untouched.
      */
-    function userEditDefinition() {
-      return {
-        kind: USER_EDIT_KIND,
-        target: 'chat',
-        match: event => event.type === 'user/message'
-          ? { id: String(event.seq), role: 'start' }
-          : null,
-        start: (_context, match) => ({ seq: match.event.seq }),
-        update: context => context.state,
-        publication: () => 'none',
-        buildViewNode: (context) => {
-          const origin = context.start ?? context.matches[0]
-          const event = origin?.event
-          if (event === undefined || event.type !== 'user/message') return null
-          const text = editableTextOf(event.data.content)
-          if (text.trim() === '') return null
-          return {
-            key: context.key,
-            kind: USER_EDIT_KIND,
-            id: context.id,
-            target: 'chat',
-            anchorSeq: event.seq + 0.05,
-            location: origin.location ?? { kind: 'unresolved' },
-            visibility: 'visible',
-            data: { seq: event.seq, text },
-          }
-        },
-      }
-    }
-
-    /**
-     * Chat row that sits directly under one user message.
-     *
-     * The shipped user bubble builds its own action row internally and exposes
-     * no extension point, and its content projection is not importable from a
-     * plugin. So instead of replacing that renderer, this registers a separate
-     * Chat row anchored at `userMessageSeq + 0.05`: Chat rows are ordered by
-     * `anchorSeq`, so the row lands immediately below the bubble.
-     */
-    function UserEditRow(props) {
-      const { node, sessionId, editResend } = props
+    function EditResendEntry(props) {
+      const { turn, sessionId, useChat, editResend } = props
       const [editing, setEditing] = React.useState(false)
       const [draft, setDraft] = React.useState('')
       const [state, setState] = React.useState('idle')
-      const original = node.data.text
+      // The turn's own user message; anchorSeq is its durable event position.
+      const userNode = useChat((snapshot) => {
+        const keys = snapshot.locations.getTurn(turn.turn)
+        for (const key of keys) {
+          const node = snapshot.nodes.get(key)
+          if (node !== undefined && node.kind === 'user') return node
+        }
+        return undefined
+      })
+      if (userNode === undefined) return null
+      const original = editableTextOf(userNode.data.content)
       if (original.trim() === '') return null
 
       const buttonStyle = {
@@ -439,7 +406,7 @@ window.__ModuleLoader__.load({
         onClick: () => {
           if (state === 'pending' || draft.trim() === '') return
           setState('pending')
-          editResend(sessionId, node.data.seq, draft)
+          editResend(sessionId, userNode.anchorSeq, draft)
             .then(() => { setEditing(false); setState('idle') })
             .catch(() => { setState('failed') })
         },
@@ -447,7 +414,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'sessions', 'resources', 'sidebarRightTabs', 'sidebarRight', 'commandUi', 'uiWorkspace', 'uiConversation'],
+      inject: ['slots', 'sessions', 'resources', 'sidebarRightTabs', 'sidebarRight', 'commandUi', 'uiWorkspace'],
       apply(ctx) {
         const sideSessions = sideConversationStore(ctx)
         const isBlank = hostSessionId => ctx.sessions.list.getSnapshot().byId[hostSessionId]?.blank === true
@@ -520,16 +487,13 @@ window.__ModuleLoader__.load({
           inject: () => ({ openSide }),
         }, SideConversationButton)), 'dsh-open-branch: composer entry')
 
-        // One Chat row directly under every user message.
-        ctx.effect(
-          () => ctx.uiConversation.events.register(userEditDefinition()),
-          'dsh-open-branch: user edit row definition',
-        )
-        ctx.effect(() => ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-          name: 'conversation.chat.node',
-          key: USER_EDIT_KIND,
+        // Rewrite this turn's user message and continue from before it.
+        ctx.effect(() => ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+          name: 'conversation.chat.turnTail',
+          id: `${TAB_ID}:edit-resend`,
+          order: 20,
           inject: () => ({ editResend }),
-        }, UserEditRow)), 'dsh-open-branch: user edit row renderer')
+        }, EditResendEntry)), 'dsh-open-branch: edit and resend')
       },
     }
   },

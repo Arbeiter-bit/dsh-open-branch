@@ -28,9 +28,8 @@ Neither entry is contributed for a blank session.
 
 ### Edit and resend
 
-Directly **under every user message** sits a pencil icon — the place Codex puts
-its edit affordance. Clicking it opens an editor prefilled with that message;
-confirming:
+Directly **under every completed turn** sits a pencil icon. Clicking it opens an
+editor prefilled with that turn's user message; confirming:
 
 1. forks the session at the event **before** the original message, so the branch
    never contains it,
@@ -40,13 +39,22 @@ confirming:
 The original session is never modified — nothing is rewritten in place, because
 a session log is append-only.
 
-**Placement note.** The shipped user bubble builds its own action row internally
-and exposes no extension point, and its content projection is not importable by
-a plugin. Rather than replace that renderer with a hand-written copy — which
-would lose reference chips, attachments and styling — this plugin registers a
-separate Chat row anchored at `userMessageSeq + 0.05`. Chat rows are ordered by
-`anchorSeq`, so the row lands immediately below the bubble. It is a sibling row,
-not the shipped inline time/copy row.
+**Placement note — why the icon is not directly under the user bubble.**
+
+The shipped user bubble builds its own action row internally and exposes no
+extension point, and its content projection is not importable by a plugin.
+Replacing that renderer would mean hand-writing a copy that loses reference
+chips, attachments and styling.
+
+The documented alternative — register a new Chat row kind through
+`ctx.uiConversation.events.register` plus a `conversation.chat.node` renderer,
+anchored at `userMessageSeq + 0.05` — **does not render**. The registration
+succeeds (the key becomes an active occupant), but
+`conversation-nodes/chat-snapshot-builder.ts` ends its `legacyContribution`
+switch with `default: return EMPTY_CONTRIBUTION`, so a kind the builder does not
+know contributes nothing to the rendered node stream. v0.5.0 shipped that
+attempt and showed no row; v0.5.1 reverts to the turn-tail entry, which is the
+only placement that actually renders today.
 
 ## Status
 

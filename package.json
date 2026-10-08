@@ -1,6 +1,6 @@
 {
   "name": "dsh-open-branch",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "A writable side conversation (/side or the composer button) plus edit-and-resend for any sent message, without interrupting the main task.",
   "type": "module",
