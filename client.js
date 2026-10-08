@@ -11,7 +11,11 @@
  * no Host route: forking uses the shipped `remote.session.fork`.
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-side-branch',
+  // MUST equal the package name in package.json and the row `name` in
+  // cordis.patch.yml. The module system matches this factory to the Loader row
+  // by this exact id; a mismatch makes the client entry fail to import, and the
+  // web boot audit then refuses to mount the whole GUI.
+  id: 'dsh-open-branch',
   factory(require) {
     const React = require('react')
     const h = React.createElement
