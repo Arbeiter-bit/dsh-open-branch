@@ -5,14 +5,23 @@ DSH session, in the right Sidebar — without interrupting the main task.
 
 ## Status
 
-v0.1.1. The fork action and the sidebar tab are verified registered and live
-(Inspect: `dsh-open-branch` in `sidebar.right.pane.tab`,
-`dsh-open-branch:branch-here` in `conversation.chat.turnTail`).
+v0.1.2. Cold boot verified, not just registration.
 
-v0.1.0 shipped with a layout defect: the tab body had no height constraint, so
-the embedded conversation could not be scrolled with the wheel. v0.1.1 adds the
-`display:flex / width:100% / height:100% / min-height:0` box the shipped
-sidebar chat tab uses. **That fix has not yet been confirmed in a browser.**
+The web boot audit (`assertEntriesActive`) refuses to mount the whole GUI when
+any client entry fails to activate, so a broken plugin here costs the user their
+whole editor, not just the plugin. v0.1.2 is verified against that audit by
+loading the composed profile in a fresh browser page with an empty module table:
+
+```
+title: DeepSeek Harness   nodes: 387   console errors: 0
+```
+
+v0.1.1 and earlier are **known-bad**: the package was renamed without renaming
+the `__ModuleLoader__` factory id, so the client entry failed to import and the
+GUI refused to boot. Fixed in v0.1.2.
+
+The sidebar scroll fix (the `display:flex / height:100% / min-height:0` tab box
+added in v0.1.1) has not yet been confirmed by a human in a browser.
 
 ## What it does
 

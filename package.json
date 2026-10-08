@@ -1,6 +1,6 @@
 {
   "name": "dsh-open-branch",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Fork a writable side conversation from any completed turn of the current DSH session, without interrupting the main task.",
   "type": "module",
