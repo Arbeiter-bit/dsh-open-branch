@@ -28,8 +28,9 @@ Neither entry is contributed for a blank session.
 
 ### Edit and resend
 
-Every completed turn also carries an **Edit and resend** entry. It opens an
-editor prefilled with that turn's user message; confirming:
+Directly **under every user message** sits a pencil icon — the place Codex puts
+its edit affordance. Clicking it opens an editor prefilled with that message;
+confirming:
 
 1. forks the session at the event **before** the original message, so the branch
    never contains it,
@@ -39,9 +40,17 @@ editor prefilled with that turn's user message; confirming:
 The original session is never modified — nothing is rewritten in place, because
 a session log is append-only.
 
+**Placement note.** The shipped user bubble builds its own action row internally
+and exposes no extension point, and its content projection is not importable by
+a plugin. Rather than replace that renderer with a hand-written copy — which
+would lose reference chips, attachments and styling — this plugin registers a
+separate Chat row anchored at `userMessageSeq + 0.05`. Chat rows are ordered by
+`anchorSeq`, so the row lands immediately below the bubble. It is a sibling row,
+not the shipped inline time/copy row.
+
 ## Status
 
-v0.4.0. Cold boot verified in a fresh browser page, not inferred from
+v0.5.0. Cold boot verified in a fresh browser page, not inferred from
 registration.
 
 The web boot audit (`assertEntriesActive`) refuses to mount the **whole GUI**
@@ -51,14 +60,14 @@ audit by loading the composed profile in a fresh page with an empty module
 table and reading the console:
 
 ```
-v0.4.0  title: DeepSeek Harness   nodes: 387   console errors: 0
+v0.5.0  title: DeepSeek Harness   nodes: 387   console errors: 0
 ```
 
 That run also proves every injected service resolved (`slots`, `sessions`,
-`resources`, `sidebarRightTabs`, `sidebarRight`, `commandUi`, `uiWorkspace`) and
-that every registration call succeeded: a missing service would leave the entry
-pending and a throwing registration would fail it, and the boot audit refuses to
-mount on either.
+`resources`, `sidebarRightTabs`, `sidebarRight`, `commandUi`, `uiWorkspace`,
+`uiConversation`) and that every registration call succeeded: a missing service
+would leave the entry pending and a throwing registration would fail it, and the
+boot audit refuses to mount on either.
 
 **v0.1.1 and earlier are known-bad.** The package was renamed without renaming
 the `__ModuleLoader__` factory id, so the client entry failed to import and the
@@ -114,9 +123,12 @@ Design commitments, each chosen against a failure mode observed in a competitor:
     `action` kind, which is what makes it submit no model message;
   - falls back to `ctx.sessions.create({ cwd })` when the fork reports
     `session/fork-unavailable`, and rethrows every other failure;
-  - adds one `conversation.chat.turnTail` entry that reads the turn's own user
-    message through `useChat`, forks at `anchorSeq - 1`, sends the edited text
-    through `reference.binding.session.prompt(..., 'queue')` inside
+  - registers one Conversation Node definition through
+    `ctx.uiConversation.events.register` plus its `conversation.chat.node`
+    renderer keyed `dsh-open-branch-edit`, which is what places the pencil row
+    under each user message;
+  - on confirm, forks at `userMessageSeq - 1`, sends the edited text through
+    `reference.binding.session.prompt(..., 'queue')` inside
     `ctx.sessions.using(...)`, then opens the branch with
     `ctx.uiWorkspace.openSession`.
 
