@@ -1,0 +1,48 @@
+{
+  "name": "dsh-reedit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Double-click any of your own messages to rewrite it and resend from that point; the original conversation is untouched.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Arbeiter-bit",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Arbeiter-bit/dsh-reedit.git"
+  },
+  "homepage": "https://github.com/Arbeiter-bit/dsh-reedit#readme",
+  "bugs": {
+    "url": "https://github.com/Arbeiter-bit/dsh-reedit/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "edit",
+    "resend",
+    "rewrite",
+    "message"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-api-session-controller"
+      ]
+    }
+  }
+}
